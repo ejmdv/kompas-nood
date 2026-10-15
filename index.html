@@ -123,7 +123,13 @@ function dist(a, b) {      // meters
 // --- route uit de link: #n=<naam>&t=<per doel 6 tekens base36: x/10 en y/10-30000> ---
 const route = { name: "", targets: [] };   // targets: [{ rd:[x,y], ll:[lat,lon] }]
 (function readRoute() {
-  const h = new URLSearchParams(location.hash.slice(1));
+  // route uit de link; zonder link de laatst gescande route van deze telefoon (bijv. geopend via het beginscherm)
+  let hash = location.hash.slice(1), fromMemory = false;
+  try {
+    if (hash.includes("t=")) localStorage.setItem("kompasNoodRoute", hash);
+    else if (localStorage.getItem("kompasNoodRoute")) { hash = localStorage.getItem("kompasNoodRoute"); fromMemory = true; }
+  } catch (e) {}
+  const h = new URLSearchParams(hash);
   route.name = h.get("n") || "";
   const t = h.get("t") || "";
   for (let i = 0; i + 6 <= t.length; i += 6) {
@@ -131,8 +137,8 @@ const route = { name: "", targets: [] };   // targets: [{ rd:[x,y], ll:[lat,lon]
     if (Number.isFinite(x) && Number.isFinite(y)) route.targets.push({ rd: [x, y], ll: fromRD(x, y) });
   }
   $("routeInfo").textContent = route.targets.length
-    ? `${route.name || "Route"}: ${route.targets.length} doelen. Probeer eerst zelf, gebruik de hints één voor één.`
-    : "Geen route geladen. Scan de QR-code op je kompastabel. Hint 2 en de kaart werken ook zonder route.";
+    ? `${route.name || "Route"}: ${route.targets.length} doelen${fromMemory ? " (laatst gescande route op deze telefoon)" : ""}. Probeer eerst zelf, gebruik de hints één voor één.`
+    : "Geen route geladen. Scan de QR-code rechtsboven op je kompastabel (pagina na de kaartbladen). Hint 2 en de kaart werken ook zonder route.";
 })();
 
 // positie op de route: dichtstbijzijnde punt op de rechte lijnen tussen de doelen (in RD-meters)

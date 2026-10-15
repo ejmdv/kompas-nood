@@ -1,5 +1,5 @@
 // Houdt de noodpagina beschikbaar zonder internet (hint 1 en 2 hebben alleen GPS nodig).
-const CACHE = "kompas-nood-v1";
+const CACHE = "kompas-nood-v2";
 const FILES = ["./", "./index.html", "./manifest.webmanifest"];
 
 self.addEventListener("install", e => {
