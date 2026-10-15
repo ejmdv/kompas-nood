@@ -211,9 +211,9 @@ $("btn3").onclick = () => {
   js.onerror = () => { $("mapNote").innerHTML = '<span class="warn">De kaart kan niet laden: geen internet en niet offline opgeslagen.</span> Gebruik hint 1 en 2.'; };
   js.onload = () => {
     $("map").style.display = "block";
-    const map = L.map("map", { minZoom: 11, maxZoom: 17 });
+    const map = L.map("map", { minZoom: 12, maxZoom: 17 });
     const Kad = L.TileLayer.extend({ getTileUrl: c => tileUrl(c.z, c.x, c.y) });
-    new Kad("", { minZoom: 11, maxZoom: 17, maxNativeZoom: 16, attribution: "Kaart &copy; Kadaster / PDOK" }).addTo(map);
+    new Kad("", { minZoom: 12, maxZoom: 17, maxNativeZoom: 16, attribution: "Kaart &copy; Kadaster / PDOK" }).addTo(map);
     const lls = route.targets.map(t => t.ll);
     if (lls.length > 1) L.polyline(lls, { color: "#c8008c", weight: 3 }).addTo(map);
     lls.forEach((ll, i) => L.circleMarker(ll, { radius: 8, color: "#c8008c", weight: 2.5, fillColor: "#fff", fillOpacity: 0.9 })
@@ -250,18 +250,19 @@ function tileUrl(z, x, y) {
 const lon2x = (lon, z) => Math.floor((lon + 180) / 360 * 2 ** z);
 const lat2y = (lat, z) => Math.floor((1 - Math.asinh(Math.tan(rad(lat))) / Math.PI) / 2 * 2 ** z);
 
-// tegels in een strook van CORRIDOR meter rond de koerslijnen (de automatische doelen volgen de paden binnen 300 m)
-const CORRIDOR = 700;
+// tegels in een strook rond de koerslijnen: grover = breder, zodat je ook ver van je route nog overzicht hebt
+const CORRIDOR = { 12: 3000, 13: 3000, 14: 2500, 15: 1200, 16: 700 };
 function corridorTiles() {
   const T = route.targets.map(t => t.rd), out = new Set();
   if (!T.length) return [];
-  const zooms = [12, 13, 14, 15, 16];
   for (let i = 0; i < Math.max(1, T.length - 1); i++) {
     const a = T[i], b = T[i + 1] || T[i], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 150));
     for (let k = 0; k <= n; k++) {
       const x = a[0] + (b[0] - a[0]) * k / n, y = a[1] + (b[1] - a[1]) * k / n;
-      const sw = fromRD(x - CORRIDOR, y - CORRIDOR), ne = fromRD(x + CORRIDOR, y + CORRIDOR);
-      for (const z of zooms) for (let tx = lon2x(sw[1], z); tx <= lon2x(ne[1], z); tx++) for (let ty = lat2y(ne[0], z); ty <= lat2y(sw[0], z); ty++) out.add(`${z}/${tx}/${ty}`);
+      for (const z of Object.keys(CORRIDOR).map(Number)) {
+        const c = CORRIDOR[z], sw = fromRD(x - c, y - c), ne = fromRD(x + c, y + c);
+        for (let tx = lon2x(sw[1], z); tx <= lon2x(ne[1], z); tx++) for (let ty = lat2y(ne[0], z); ty <= lat2y(sw[0], z); ty++) out.add(`${z}/${tx}/${ty}`);
+      }
     }
   }
   return [...out].map(k => k.split("/").map(Number));
@@ -295,14 +296,20 @@ async function saveOffline() {
     await Promise.all([worker(), worker(), worker(), worker()]);
     el.textContent = failed
       ? `Offline kaart: ${done} van ${tiles.length} tegels opgeslagen, ${failed} mislukt. Open de pagina nog eens met internet.`
-      : `Offline kaart opgeslagen: ${tiles.length} tegels langs je route${bytes ? ` (${(bytes / 1048576).toFixed(1).replace(".", ",")} MB nieuw)` : ""}. Hint 3 werkt nu ook zonder bereik.`;
+      : (rememberOffline(tiles.length), `Offline kaart opgeslagen: ${tiles.length} tegels langs je route${bytes ? ` (${(bytes / 1048576).toFixed(1).replace(".", ",")} MB nieuw)` : ""}. Hint 3 werkt nu ook zonder bereik.`);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   } catch (e) {
     el.textContent = "Offline kaart opslaan lukte niet: " + e.message;
   }
 }
+// onthouden welke route offline klaarstaat, zodat de melding zonder internet klopt
+const routeKey = () => route.targets.map(t => t.rd.join(",")).join(";");
+function rememberOffline(n) { try { localStorage.setItem("kompasNoodOffline", JSON.stringify({ key: routeKey(), n })); } catch (e) {} }
+function offlineReady() { try { const o = JSON.parse(localStorage.getItem("kompasNoodOffline") || "null"); return o && o.key === routeKey() ? o.n : 0; } catch (e) { return 0; } }
 if (navigator.onLine) saveOffline();
-else $("offline").textContent = "Geen internet: offline kaart kan nu niet worden opgeslagen.";
+else $("offline").textContent = offlineReady()
+  ? `Offline kaart staat klaar (${offlineReady()} tegels langs je route).`
+  : "Geen internet en deze route is niet offline opgeslagen: hint 3 werkt nu niet. Hint 1 en 2 wel.";
 
 // offline beschikbaar maken (alleen via https, zoals op GitHub Pages)
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
