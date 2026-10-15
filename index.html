@@ -45,6 +45,23 @@
     <p class="gps" id="gps">GPS: nog geen positie. Sta even stil in het open veld.</p>
   </div>
 
+  <!-- Voortgang: laatst bereikt doel -->
+  <div class="card" id="progress">
+    <p class="mid">Laatst bereikt doel</p>
+    <div class="row" style="align-items:center">
+      <button class="ghost" id="recMin" style="flex:0 0 64px">−</button>
+      <div class="big" id="recNum" style="text-align:center">1</div>
+      <button class="ghost" id="recPlus" style="flex:0 0 64px">+</button>
+    </div>
+    <p class="muted" id="recTxt">Tik + bij elk doel dat je haalt. Hint 1 wijst dan naar het volgende doel.</p>
+  </div>
+
+  <!-- Daglicht -->
+  <div class="card" id="daylight">
+    <p class="mid">Daglicht</p>
+    <p id="dayTxt" class="muted">Berekenen zodra er een positie is…</p>
+  </div>
+
   <!-- Stap 1: richting naar het volgende doel -->
   <button class="step" id="btn1">Hint 1: welke kant op?</button>
   <div class="card hidden" id="hint1">
@@ -68,6 +85,23 @@
   <button class="step hidden" id="btn3">Hint 3: laat de kaart zien</button>
   <div id="map"></div>
   <p class="muted hidden" id="mapNote">Kadaster-kaart, dezelfde als je papieren blad. Paarse lijnen: je koers tussen de doelen. Blauwe stip: jij.</p>
+
+  <!-- Reservekompas -->
+  <button class="ghost" id="btnCompass">Kompas kwijt of kapot? Gebruik de telefoon</button>
+  <div class="card hidden" id="compass">
+    <p class="muted">Leg de telefoon plat, bovenkant van je af, weg van metaal. Telefoonkompassen wijken vaak een paar graden af: gebruik dit alleen als noodoplossing en kijk geregeld op de kaart.</p>
+    <svg viewBox="-100 -100 200 200" style="width:70%;max-width:260px;align-self:center">
+      <circle r="92" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="4"/>
+      <g id="cmpArrow"><path d="M0,-80 L22,-30 L8,-30 L8,70 L-8,70 L-8,-30 L-22,-30 Z" fill="#c8008c"/></g>
+      <text y="-86" text-anchor="middle" font-size="14" fill="currentColor" opacity=".6">voor</text>
+    </svg>
+    <div class="big" id="cmpTxt" style="text-align:center">—</div>
+    <p class="mid" id="cmpSub" style="text-align:center"></p>
+  </div>
+
+  <!-- Thuisblijver -->
+  <button class="ghost" id="btnHome">Laat iemand thuis weten dat je gaat lopen</button>
+  <p class="muted hidden" id="homeTxt"></p>
 
   <!-- Echt nood -->
   <div class="card" style="margin-top:8px">
@@ -182,10 +216,14 @@ function render() {
       $("h1where").textContent = "Geen route geladen: er is geen doel om naar te wijzen.";
       $("h1deg").textContent = "—"; $("h1txt").textContent = ""; $("h1off").textContent = "";
     } else {
-      const nextIdx = w.u > 0.98 ? Math.min(w.i + 2, route.targets.length - 1) : w.i + 1;
+      // afgevinkt doel heeft voorrang; anders gok op basis van de dichtstbijzijnde etappe
+      const nextIdx = reached > 1 ? Math.min(reached, route.targets.length - 1)
+        : (w.u > 0.98 ? Math.min(w.i + 2, route.targets.length - 1) : w.i + 1);
       const tgt = route.targets[nextIdx], dm = dist(me, tgt.ll);
       const mag = norm(bearing(me, tgt.ll) - declModel(me[1]));
-      $("h1where").textContent = `Je zit het dichtst bij etappe ${w.i + 1} (van doel ${w.i + 1} naar ${w.i + 2}).`;
+      $("h1where").textContent = reached > 1
+        ? `Laatst bereikt: doel ${reached}. Volgens GPS zit je het dichtst bij etappe ${w.i + 1}${w.i + 1 !== reached ? " (klopt je afvinken nog?)" : ""}.`
+        : `Je zit het dichtst bij etappe ${w.i + 1} (van doel ${w.i + 1} naar ${w.i + 2}).`;
       $("h1deg").textContent = fmtDeg(mag);
       $("h1txt").textContent = `Doel ${nextIdx + 1} ligt ${dm < 1000 ? Math.round(dm / 10) * 10 + " m" : (dm / 1000).toFixed(1).replace(".", ",") + " km"} op deze koers.`;
       $("h1off").textContent = w.d < 75 ? "Je zit vrijwel op je koerslijn."
@@ -197,6 +235,8 @@ function render() {
     $("h2rd").textContent = `${(rd[0] / 1000).toFixed(2).replace(".", ",")} / ${(rd[1] / 1000).toFixed(2).replace(".", ",")}`;
     $("h2txt").textContent = `Tussen kilometerlijnen ${Math.floor(rd[0] / 1000)}–${Math.floor(rd[0] / 1000) + 1} en ${Math.floor(rd[1] / 1000)}–${Math.floor(rd[1] / 1000) + 1}.`;
   }
+  renderDaylight();
+  renderCompass();
   if (shown[3] && window.meMarker) { meMarker.setLatLng(me); meCircle.setLatLng(me).setRadius(pos.acc); }
   $("shareTxt").textContent = `Positie: ${me[0].toFixed(5)}, ${me[1].toFixed(5)} (RD ${Math.round(rd[0])} / ${Math.round(rd[1])})`;
 }
@@ -236,6 +276,122 @@ $("theme").onclick = () => {
   r.dataset.theme = dark ? "light" : "dark";
 };
 
+
+
+// --- Laatst bereikt doel (per route op deze telefoon onthouden) ---
+let reached = 1;
+const recKey = () => "kompasNoodReached:" + route.targets.map(t => t.rd.join(",")).join(";");
+try { reached = Math.max(1, +(localStorage.getItem(recKey()) || 1)); } catch (e) {}
+function setReached(n) {
+  reached = Math.max(1, Math.min(route.targets.length || 1, n));
+  try { localStorage.setItem(recKey(), reached); } catch (e) {}
+  $("recNum").textContent = reached;
+  $("recTxt").textContent = !route.targets.length ? "Geen route geladen."
+    : reached >= route.targets.length ? "Finish bereikt. Goed gelopen."
+    : `Volgende: doel ${reached + 1} van ${route.targets.length}. Tik + als je daar bent.`;
+  render();
+}
+$("recMin").onclick = () => setReached(reached - 1);
+$("recPlus").onclick = () => setReached(reached + 1);
+if (!route.targets.length) $("progress").classList.add("hidden");
+
+// --- Daglicht: zonsondergang en burgerlijke schemer (zonformules zoals SunCalc), werkt offline ---
+function sunSet(date, lat, lon, h) {
+  const dayMs = 864e5, J1970 = 2440588, J2000 = 2451545, J0 = 0.0009, e = rad(23.4397);
+  const d = date.valueOf() / dayMs - 0.5 + J1970 - J2000, lw = rad(-lon), phi = rad(lat);
+  const n = Math.round(d - J0 - lw / (2 * Math.PI));
+  const approx = (Ht) => J0 + (Ht + lw) / (2 * Math.PI) + n;
+  const ds = approx(0), M = rad(357.5291 + 0.98560028 * ds);
+  const C = rad(1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
+  const Lsun = M + C + rad(102.9372) + Math.PI, dec = Math.asin(Math.sin(e) * Math.sin(Lsun));
+  const cosw = (Math.sin(rad(h)) - Math.sin(phi) * Math.sin(dec)) / (Math.cos(phi) * Math.cos(dec));
+  if (cosw < -1 || cosw > 1) return null;
+  const J = J2000 + approx(Math.acos(cosw)) + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * Lsun);
+  return new Date((J + 0.5 - J1970) * dayMs);
+}
+const hhmm = d => d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+const dur = min => min < 60 ? `${Math.round(min)} min` : `${Math.floor(min / 60)} u ${String(Math.round(min % 60)).padStart(2, "0")}`;
+const PATH_FACTOR = 1.25, SPEED_KMH = 4.5;   // omweg over paden t.o.v. hemelsbreed; wandeltempo
+// resterende afstand: van je positie naar het volgende doel, dan de rechte etappes tot de finish (x omwegfactor)
+function remainingKm(fromLL, nextIdx) {
+  const T = route.targets;
+  if (!T.length) return 0;
+  let m = dist(fromLL, T[nextIdx].ll);
+  for (let k = nextIdx; k < T.length - 1; k++) m += dist(T[k].ll, T[k + 1].ll);
+  return m / 1000 * PATH_FACTOR;
+}
+function nextTargetIdx() {
+  if (!route.targets.length) return 0;
+  if (reached > 1) return Math.min(reached, route.targets.length - 1);
+  const w = pos ? whereOnRoute(toRD(pos.ll[0], pos.ll[1])) : null;
+  return w ? Math.min(w.i + 1, route.targets.length - 1) : 1;
+}
+function renderDaylight() {
+  const ll = pos ? pos.ll : (route.targets[0] && route.targets[0].ll);
+  if (!ll) return;
+  const now = new Date(), set = sunSet(now, ll[0], ll[1], -0.833), dusk = sunSet(now, ll[0], ll[1], -6);
+  if (!set) return;
+  const left = (set - now) / 60000;
+  let txt = left > 0 ? `Zon onder om <b>${hhmm(set)}</b> (nog ${dur(left)}). Donker om ${hhmm(dusk)}.`
+                     : `De zon is al onder (${hhmm(set)}). Donker om ${hhmm(dusk)}.`;
+  if (route.targets.length > 1 && pos) {
+    const km = remainingKm(pos.ll, nextTargetIdx()), need = km / SPEED_KMH * 60, eta = new Date(now.getTime() + need * 60000);
+    txt += `<br>Nog ±${km.toFixed(1).replace(".", ",")} km tot de finish ≈ ${dur(need)}, aankomst rond ${hhmm(eta)}.`;
+    if (eta > dusk) txt += `<br><span class="warn">Je komt na donker aan. Kort in: loop naar de dichtstbijzijnde verharde weg of het eerstvolgende dorp.</span>`;
+    else if (eta > set) txt += `<br><span class="warn">Krap: je komt na zonsondergang aan. Neem geen omwegen meer.</span>`;
+  }
+  $("dayTxt").innerHTML = txt;
+}
+
+// --- Reservekompas (telefoon): pijl naar het volgende doel ---
+let heading = null;   // magnetisch, graden
+function onOrient(e) {
+  if (typeof e.webkitCompassHeading === "number") heading = e.webkitCompassHeading;            // iOS: t.o.v. magnetisch noord
+  else if (e.absolute && typeof e.alpha === "number") heading = norm(360 - e.alpha);           // Android: absolute oriëntatie
+  else return;
+  renderCompass();
+}
+$("btnCompass").onclick = async () => {
+  $("compass").classList.remove("hidden"); $("btnCompass").classList.add("hidden");
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r !== "granted") { $("cmpSub").textContent = "Geen toestemming voor het kompas van de telefoon."; return; }
+    }
+    window.addEventListener("deviceorientationabsolute", onOrient);
+    window.addEventListener("deviceorientation", onOrient);
+    setTimeout(() => { if (heading === null) $("cmpSub").textContent = "Deze telefoon geeft geen kompasrichting door aan de browser."; }, 3000);
+  } catch (e) { $("cmpSub").textContent = "Kompas niet beschikbaar: " + e.message; }
+};
+function renderCompass() {
+  if ($("compass").classList.contains("hidden") || heading === null) return;
+  if (!pos || route.targets.length < 2) { $("cmpTxt").textContent = `${fmtDeg(heading)}`; $("cmpSub").textContent = "Telefoon wijst deze kant op (magnetisch). Wacht op GPS voor de richting naar je doel."; return; }
+  const idx = nextTargetIdx(), tgt = route.targets[idx];
+  const want = norm(bearing(pos.ll, tgt.ll) - declModel(pos.ll[1]));
+  const diff = ((want - heading + 540) % 360) - 180;   // -180..180, positief = naar rechts draaien
+  $("cmpArrow").setAttribute("transform", `rotate(${diff})`);
+  $("cmpTxt").textContent = Math.abs(diff) < 5 ? "Rechtdoor" : `${Math.round(Math.abs(diff))}° ${diff > 0 ? "rechts" : "links"}`;
+  $("cmpSub").textContent = `Naar doel ${idx + 1}: koers ${fmtDeg(want)}, telefoon wijst ${fmtDeg(heading)}.`;
+}
+
+// --- Thuisblijver: route, vertrek, verwachte aankomst en afspraak bij geen bericht ---
+$("btnHome").onclick = async () => {
+  const now = new Date(), T = route.targets;
+  let km = 0; for (let k = 0; k < T.length - 1; k++) km += dist(T[k].ll, T[k + 1].ll);
+  km = km / 1000 * PATH_FACTOR;
+  const eta = new Date(now.getTime() + (km / SPEED_KMH * 60 + 30) * 60000);   // + half uur pauze
+  const alarm = new Date(eta.getTime() + 60 * 60000);
+  const text = `Ik ga een kompaswandeling lopen${route.name ? `: ${route.name}` : ""}. ` +
+    (T.length ? `Ongeveer ${km.toFixed(0)} km, vertrek ${hhmm(now)}, verwacht klaar rond ${hhmm(eta)}. ` : "") +
+    `Heb je om ${hhmm(alarm)} niets van me gehoord en neem ik niet op: bel 112 en geef deze route door. ` +
+    (T.length ? `Route en doelen: ${location.href.split("#")[0]}#${location.hash.slice(1) || (localStorage.getItem("kompasNoodRoute") || "")}` : "");
+  $("homeTxt").classList.remove("hidden");
+  try { if (navigator.share) { await navigator.share({ text }); $("homeTxt").textContent = "Verstuurd via deelmenu."; } else { await navigator.clipboard.writeText(text); $("homeTxt").textContent = "Bericht gekopieerd. Plak het in WhatsApp of sms: " + text; } }
+  catch (e) { $("homeTxt").textContent = text; }
+};
+
+setReached(reached);
+renderDaylight();
 
 // --- Offline kaart: Kadaster-tegels langs de route opslaan zodra de route geladen is (thuis, met internet) ---
 const LIBS = ["https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css", "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"];
