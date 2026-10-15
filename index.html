@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1B2B4A">
+<title>Kompas Nood</title>
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  :root { --navy:#1B2B4A; --groen:#3EBF8A; --mag:#c8008c; --bg:#ffffff; --fg:#1B2B4A; --muted:#5b6578; --card:#f2f4f8; --line:#dde2ea; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#10172a; --fg:#eef1f6; --muted:#a3adc0; --card:#1a2440; --line:#2a3550; --mag:#ff5cc4; } }
+  :root[data-theme="dark"] { --bg:#10172a; --fg:#eef1f6; --muted:#a3adc0; --card:#1a2440; --line:#2a3550; --mag:#ff5cc4; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system, "Segoe UI", Calibri, system-ui, sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:16px 16px calc(24px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:14px; }
+  h1 { font-size:22px; margin:4px 0 0; }
+  h1 span { color:var(--groen); }
+  p { margin:0; line-height:1.4; }
+  .muted { color:var(--muted); font-size:14px; }
+  .card { background:var(--card); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .big { font-size:40px; font-weight:800; letter-spacing:-0.5px; color:var(--mag); line-height:1.05; }
+  .mid { font-size:20px; font-weight:700; }
+  button, a.btn { display:block; width:100%; padding:16px; border:0; border-radius:12px; font:inherit; font-size:18px; font-weight:700;
+    text-align:center; text-decoration:none; cursor:pointer; background:var(--navy); color:#fff; }
+  :root[data-theme="dark"] button, :root[data-theme="dark"] a.btn { background:#2b3d66; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) button, :root:not([data-theme="light"]) a.btn { background:#2b3d66; } }
+  button.step { background:var(--groen); color:#08281b; }
+  button.ghost { background:transparent; color:var(--fg); border:2px solid var(--line); font-size:16px; padding:12px; }
+  a.btn.red { background:#c0392b; }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; }
+  #map { height:60vh; border-radius:12px; display:none; }
+  .warn { color:#c0392b; font-weight:600; }
+  .gps { font-size:14px; color:var(--muted); }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kompas <span>Nood</span></h1>
+  <p class="muted" id="routeInfo">Route laden…</p>
+
+  <div class="card">
+    <p class="gps" id="gps">GPS: nog geen positie. Sta even stil in het open veld.</p>
+  </div>
+
+  <!-- Stap 1: richting naar het volgende doel -->
+  <button class="step" id="btn1">Hint 1: welke kant op?</button>
+  <div class="card hidden" id="hint1">
+    <p class="muted" id="h1where"></p>
+    <div class="big" id="h1deg">—</div>
+    <p class="mid" id="h1txt"></p>
+    <p class="muted" id="h1off"></p>
+    <p class="muted">Draai de kompasring op dit getal, houd het kompas vlak, draai jezelf tot de naald in het pijlhuisje staat, en loop waar de pijl heen wijst.</p>
+  </div>
+
+  <!-- Stap 2: RD-coördinaat om zelf op de kaart te vinden -->
+  <button class="step hidden" id="btn2">Hint 2: waar ben ik op mijn kaart?</button>
+  <div class="card hidden" id="hint2">
+    <p class="muted">Je positie in het kilometerraster van je kaartblad (RD):</p>
+    <div class="big" id="h2rd">—</div>
+    <p class="mid" id="h2txt"></p>
+    <p class="muted">Eerste getal: de verticale lijnen (onder/boven op de kaart). Tweede getal: de horizontale lijnen (links/rechts). Twee cijfers achter de komma = tientallen meters.</p>
+  </div>
+
+  <!-- Stap 3: kaart -->
+  <button class="step hidden" id="btn3">Hint 3: laat de kaart zien</button>
+  <div id="map"></div>
+  <p class="muted hidden" id="mapNote">De kaart heeft internet nodig. Paarse lijnen: je koers tussen de doelen. Blauwe stip: jij.</p>
+
+  <!-- Echt nood -->
+  <div class="card" style="margin-top:8px">
+    <p class="mid">Echt in nood?</p>
+    <div class="row">
+      <a class="btn red" href="tel:112">Bel 112</a>
+      <button id="share">Deel positie</button>
+    </div>
+    <p class="muted" id="shareTxt"></p>
+  </div>
+
+  <button class="ghost" id="theme">Licht / donker</button>
+  <p class="muted">Werkt zonder internet voor hint 1 en 2 (alleen GPS). Je route staat alleen in de link en wordt nergens opgeslagen.</p>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI, norm = d => (d % 360 + 360) % 360;
+const fmtDeg = d => String(Math.round(norm(d)) % 360).padStart(3, "0") + "°";
+
+// --- WGS84 <-> RD (benadering Schreutelkamp & Strang van Hees, ±1 m; geen externe bibliotheek, werkt offline) ---
+function toRD(lat, lon) {
+  const dF = 0.36 * (lat - 52.15517440), dL = 0.36 * (lon - 5.38720621);
+  const R = [[0,1,190094.945],[1,1,-11832.228],[2,1,-114.221],[0,3,-32.391],[1,0,-0.705],[3,1,-2.340],[1,3,-0.608],[0,2,-0.008],[2,3,0.148]];
+  const S = [[1,0,309056.544],[0,2,3638.893],[2,0,73.077],[1,2,-157.984],[3,0,59.788],[0,1,0.433],[2,2,-6.439],[1,1,-0.032],[0,4,0.092],[1,4,-0.054]];
+  let x = 155000, y = 463000;
+  for (const [p, q, c] of R) x += c * dF ** p * dL ** q;
+  for (const [p, q, c] of S) y += c * dF ** p * dL ** q;
+  return [x, y];
+}
+function fromRD(x, y) {
+  const dX = (x - 155000) * 1e-5, dY = (y - 463000) * 1e-5;
+  const K = [[0,1,3235.65389],[2,0,-32.58297],[0,2,-0.24750],[2,1,-0.84978],[0,3,-0.06550],[2,2,-0.01709],[1,0,-0.00738],[4,0,0.00530],[2,3,-0.00039],[4,1,0.00033],[1,1,-0.00012]];
+  const Lc = [[1,0,5260.52916],[1,1,105.94684],[1,2,2.45656],[3,0,-0.81885],[1,3,0.05594],[3,1,-0.05607],[0,1,0.01199],[3,2,-0.00256],[1,4,0.00128],[0,2,0.00022],[2,0,-0.00022],[5,0,0.00026]];
+  let lat = 52.15517440, lon = 5.38720621;
+  for (const [p, q, c] of K) lat += c * dX ** p * dY ** q / 3600;
+  for (const [p, q, c] of Lc) lon += c * dX ** p * dY ** q / 3600;
+  return [lat, lon];
+}
+// declinatie NL 2026 (IGRF-14, lineair in lengtegraad; zelfde model als de planner)
+const declModel = lon => 2.915 + 0.31 * (lon - 5.39);
+
+function bearing(a, b) {   // ware koers van a naar b ([lat, lon])
+  const f1 = rad(a[0]), f2 = rad(b[0]), dl = rad(b[1] - a[1]);
+  return norm(deg(Math.atan2(Math.sin(dl) * Math.cos(f2), Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl))));
+}
+function dist(a, b) {      // meters
+  const R = 6371000, f1 = rad(a[0]), f2 = rad(b[0]), df = f2 - f1, dl = rad(b[1] - a[1]);
+  const h = Math.sin(df / 2) ** 2 + Math.cos(f1) * Math.cos(f2) * Math.sin(dl / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// --- route uit de link: #n=<naam>&t=<per doel 6 tekens base36: x/10 en y/10-30000> ---
+const route = { name: "", targets: [] };   // targets: [{ rd:[x,y], ll:[lat,lon] }]
+(function readRoute() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  route.name = h.get("n") || "";
+  const t = h.get("t") || "";
+  for (let i = 0; i + 6 <= t.length; i += 6) {
+    const x = parseInt(t.slice(i, i + 3), 36) * 10, y = (parseInt(t.slice(i + 3, i + 6), 36) + 30000) * 10;
+    if (Number.isFinite(x) && Number.isFinite(y)) route.targets.push({ rd: [x, y], ll: fromRD(x, y) });
+  }
+  $("routeInfo").textContent = route.targets.length
+    ? `${route.name || "Route"}: ${route.targets.length} doelen. Probeer eerst zelf, gebruik de hints één voor één.`
+    : "Geen route geladen. Scan de QR-code op je kompastabel. Hint 2 en de kaart werken ook zonder route.";
+})();
+
+// positie op de route: dichtstbijzijnde punt op de rechte lijnen tussen de doelen (in RD-meters)
+function whereOnRoute(p) {
+  const T = route.targets.map(t => t.rd);
+  if (T.length < 2) return null;
+  let best = null;
+  for (let i = 0; i < T.length - 1; i++) {
+    const [ax, ay] = T[i], [bx, by] = T[i + 1], dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+    const u = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / L2));
+    const cx = ax + u * dx, cy = ay + u * dy, d = Math.hypot(p[0] - cx, p[1] - cy);
+    const side = Math.sign(dx * (p[1] - ay) - dy * (p[0] - ax));   // >0 = links van de koers
+    if (!best || d < best.d) best = { i, u, d, side };
+  }
+  return best;
+}
+
+// --- GPS ---
+let pos = null;   // { ll:[lat,lon], acc }
+if ("geolocation" in navigator) {
+  navigator.geolocation.watchPosition(p => {
+    pos = { ll: [p.coords.latitude, p.coords.longitude], acc: p.coords.accuracy };
+    $("gps").textContent = `GPS: positie bekend, nauwkeurig tot ±${Math.round(pos.acc)} m.`;
+    render();
+  }, e => {
+    $("gps").innerHTML = `<span class="warn">GPS lukt niet (${e.message}).</span> Sta locatie toe voor deze pagina en ga in het open veld staan.`;
+  }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+} else {
+  $("gps").innerHTML = `<span class="warn">Deze telefoon geeft geen locatie door aan de browser.</span>`;
+}
+
+const shown = { 1: false, 2: false, 3: false };
+function render() {
+  if (!pos) return;
+  const me = pos.ll, rd = toRD(me[0], me[1]);
+  // hint 1
+  if (shown[1]) {
+    const w = whereOnRoute(rd);
+    if (!w) {
+      $("h1where").textContent = "Geen route geladen: er is geen doel om naar te wijzen.";
+      $("h1deg").textContent = "—"; $("h1txt").textContent = ""; $("h1off").textContent = "";
+    } else {
+      const nextIdx = w.u > 0.98 ? Math.min(w.i + 2, route.targets.length - 1) : w.i + 1;
+      const tgt = route.targets[nextIdx], dm = dist(me, tgt.ll);
+      const mag = norm(bearing(me, tgt.ll) - declModel(me[1]));
+      $("h1where").textContent = `Je zit het dichtst bij etappe ${w.i + 1} (van doel ${w.i + 1} naar ${w.i + 2}).`;
+      $("h1deg").textContent = fmtDeg(mag);
+      $("h1txt").textContent = `Doel ${nextIdx + 1} ligt ${dm < 1000 ? Math.round(dm / 10) * 10 + " m" : (dm / 1000).toFixed(1).replace(".", ",") + " km"} op deze koers.`;
+      $("h1off").textContent = w.d < 75 ? "Je zit vrijwel op je koerslijn."
+        : `Je zit ±${Math.round(w.d / 10) * 10} m ${w.side > 0 ? "links" : "rechts"} van je koerslijn (in looprichting).`;
+    }
+  }
+  // hint 2
+  if (shown[2]) {
+    $("h2rd").textContent = `${(rd[0] / 1000).toFixed(2).replace(".", ",")} / ${(rd[1] / 1000).toFixed(2).replace(".", ",")}`;
+    $("h2txt").textContent = `Tussen kilometerlijnen ${Math.floor(rd[0] / 1000)}–${Math.floor(rd[0] / 1000) + 1} en ${Math.floor(rd[1] / 1000)}–${Math.floor(rd[1] / 1000) + 1}.`;
+  }
+  if (shown[3] && window.meMarker) { meMarker.setLatLng(me); meCircle.setLatLng(me).setRadius(pos.acc); }
+  $("shareTxt").textContent = `Positie: ${me[0].toFixed(5)}, ${me[1].toFixed(5)} (RD ${Math.round(rd[0])} / ${Math.round(rd[1])})`;
+}
+
+$("btn1").onclick = () => { shown[1] = true; $("hint1").classList.remove("hidden"); $("btn1").classList.add("hidden"); $("btn2").classList.remove("hidden"); render(); };
+$("btn2").onclick = () => { shown[2] = true; $("hint2").classList.remove("hidden"); $("btn2").classList.add("hidden"); $("btn3").classList.remove("hidden"); render(); };
+$("btn3").onclick = () => {
+  if (!navigator.onLine) { $("mapNote").classList.remove("hidden"); $("mapNote").innerHTML = '<span class="warn">Geen internet: de kaart kan niet laden.</span> Gebruik hint 1 en 2.'; return; }
+  shown[3] = true; $("btn3").classList.add("hidden"); $("mapNote").classList.remove("hidden");
+  // Leaflet pas laden als het echt nodig is
+  const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"; document.head.appendChild(css);
+  const js = document.createElement("script"); js.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+  js.onload = () => {
+    $("map").style.display = "block";
+    const map = L.map("map");
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+    const lls = route.targets.map(t => t.ll);
+    if (lls.length > 1) L.polyline(lls, { color: "#c8008c", weight: 3 }).addTo(map);
+    lls.forEach((ll, i) => L.circleMarker(ll, { radius: 8, color: "#c8008c", weight: 2.5, fillColor: "#fff", fillOpacity: 0.9 })
+      .bindTooltip(String(i + 1), { permanent: true, direction: "right", offset: [8, 0] }).addTo(map));
+    const me = pos ? pos.ll : (lls[0] || [52.1, 5.3]);
+    window.meCircle = L.circle(me, { radius: pos ? pos.acc : 0, color: "#2b6cb0", weight: 1, fillOpacity: 0.15 }).addTo(map);
+    window.meMarker = L.circleMarker(me, { radius: 8, color: "#fff", weight: 3, fillColor: "#2b6cb0", fillOpacity: 1 }).addTo(map);
+    map.setView(me, 15);
+  };
+  document.head.appendChild(js);
+};
+$("share").onclick = async () => {
+  if (!pos) { $("shareTxt").textContent = "Nog geen GPS-positie."; return; }
+  const [la, lo] = pos.ll, text = `Mijn positie: ${la.toFixed(5)}, ${lo.toFixed(5)} https://www.openstreetmap.org/?mlat=${la.toFixed(5)}&mlon=${lo.toFixed(5)}#map=17/${la.toFixed(5)}/${lo.toFixed(5)}`;
+  try { if (navigator.share) await navigator.share({ text }); else { await navigator.clipboard.writeText(text); $("shareTxt").textContent = "Positie gekopieerd. Plak hem in een bericht."; } }
+  catch (e) { $("shareTxt").textContent = text; }
+};
+$("theme").onclick = () => {
+  const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  r.dataset.theme = dark ? "light" : "dark";
+};
+
+// offline beschikbaar maken (alleen via https, zoals op GitHub Pages)
+if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>

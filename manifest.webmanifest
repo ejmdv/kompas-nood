@@ -1,0 +1,10 @@
+{
+  "name": "Kompas Nood",
+  "short_name": "Kompas Nood",
+  "description": "Noodhulp bij een kompaswandeling: welke kant op, waar ben ik op de kaart, en pas als laatste een kaart.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#1B2B4A",
+  "theme_color": "#1B2B4A",
+  "lang": "nl"
+}
