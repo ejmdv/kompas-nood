@@ -41,6 +41,7 @@
   <p class="muted" id="routeInfo">Route laden…</p>
 
   <div class="card">
+    <p class="gps" id="offline">Offline kaart: nog niet opgeslagen.</p>
     <p class="gps" id="gps">GPS: nog geen positie. Sta even stil in het open veld.</p>
   </div>
 
@@ -66,7 +67,7 @@
   <!-- Stap 3: kaart -->
   <button class="step hidden" id="btn3">Hint 3: laat de kaart zien</button>
   <div id="map"></div>
-  <p class="muted hidden" id="mapNote">De kaart heeft internet nodig. Paarse lijnen: je koers tussen de doelen. Blauwe stip: jij.</p>
+  <p class="muted hidden" id="mapNote">Kadaster-kaart, dezelfde als je papieren blad. Paarse lijnen: je koers tussen de doelen. Blauwe stip: jij.</p>
 
   <!-- Echt nood -->
   <div class="card" style="margin-top:8px">
@@ -203,15 +204,16 @@ function render() {
 $("btn1").onclick = () => { shown[1] = true; $("hint1").classList.remove("hidden"); $("btn1").classList.add("hidden"); $("btn2").classList.remove("hidden"); render(); };
 $("btn2").onclick = () => { shown[2] = true; $("hint2").classList.remove("hidden"); $("btn2").classList.add("hidden"); $("btn3").classList.remove("hidden"); render(); };
 $("btn3").onclick = () => {
-  if (!navigator.onLine) { $("mapNote").classList.remove("hidden"); $("mapNote").innerHTML = '<span class="warn">Geen internet: de kaart kan niet laden.</span> Gebruik hint 1 en 2.'; return; }
   shown[3] = true; $("btn3").classList.add("hidden"); $("mapNote").classList.remove("hidden");
-  // Leaflet pas laden als het echt nodig is
-  const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"; document.head.appendChild(css);
-  const js = document.createElement("script"); js.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+  // Leaflet pas laden als het nodig is (komt uit de offline opslag als die er is)
+  const css = document.createElement("link"); css.rel = "stylesheet"; css.href = LIBS[0]; document.head.appendChild(css);
+  const js = document.createElement("script"); js.src = LIBS[1];
+  js.onerror = () => { $("mapNote").innerHTML = '<span class="warn">De kaart kan niet laden: geen internet en niet offline opgeslagen.</span> Gebruik hint 1 en 2.'; };
   js.onload = () => {
     $("map").style.display = "block";
-    const map = L.map("map");
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+    const map = L.map("map", { minZoom: 11, maxZoom: 17 });
+    const Kad = L.TileLayer.extend({ getTileUrl: c => tileUrl(c.z, c.x, c.y) });
+    new Kad("", { minZoom: 11, maxZoom: 17, maxNativeZoom: 16, attribution: "Kaart &copy; Kadaster / PDOK" }).addTo(map);
     const lls = route.targets.map(t => t.ll);
     if (lls.length > 1) L.polyline(lls, { color: "#c8008c", weight: 3 }).addTo(map);
     lls.forEach((ll, i) => L.circleMarker(ll, { radius: 8, color: "#c8008c", weight: 2.5, fillColor: "#fff", fillOpacity: 0.9 })
@@ -233,6 +235,74 @@ $("theme").onclick = () => {
   const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
   r.dataset.theme = dark ? "light" : "dark";
 };
+
+
+// --- Offline kaart: Kadaster-tegels langs de route opslaan zodra de route geladen is (thuis, met internet) ---
+const LIBS = ["https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css", "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"];
+const E3857 = 20037508.342789244;
+function tileUrl(z, x, y) {
+  // z<=11 en 12: TOP100, 13: TOP50, 14-16: TOP25 (PDOK levert elke laag alleen in zijn schaalbereik)
+  const layer = z <= 12 ? "top100raster" : z === 13 ? "top50raster" : "top25raster";
+  const zz = Math.min(z, 16), s = 2 * E3857 / 2 ** zz, minx = -E3857 + x * s, maxy = E3857 - y * s;
+  return `https://service.pdok.nl/brt/topraster/wms/v1_0?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=${layer}&STYLES=&CRS=EPSG:3857` +
+    `&BBOX=${minx.toFixed(2)},${(maxy - s).toFixed(2)},${(minx + s).toFixed(2)},${maxy.toFixed(2)}&WIDTH=256&HEIGHT=256&FORMAT=image/jpeg`;
+}
+const lon2x = (lon, z) => Math.floor((lon + 180) / 360 * 2 ** z);
+const lat2y = (lat, z) => Math.floor((1 - Math.asinh(Math.tan(rad(lat))) / Math.PI) / 2 * 2 ** z);
+
+// tegels in een strook van CORRIDOR meter rond de koerslijnen (de automatische doelen volgen de paden binnen 300 m)
+const CORRIDOR = 700;
+function corridorTiles() {
+  const T = route.targets.map(t => t.rd), out = new Set();
+  if (!T.length) return [];
+  const zooms = [12, 13, 14, 15, 16];
+  for (let i = 0; i < Math.max(1, T.length - 1); i++) {
+    const a = T[i], b = T[i + 1] || T[i], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 150));
+    for (let k = 0; k <= n; k++) {
+      const x = a[0] + (b[0] - a[0]) * k / n, y = a[1] + (b[1] - a[1]) * k / n;
+      const sw = fromRD(x - CORRIDOR, y - CORRIDOR), ne = fromRD(x + CORRIDOR, y + CORRIDOR);
+      for (const z of zooms) for (let tx = lon2x(sw[1], z); tx <= lon2x(ne[1], z); tx++) for (let ty = lat2y(ne[0], z); ty <= lat2y(sw[0], z); ty++) out.add(`${z}/${tx}/${ty}`);
+    }
+  }
+  return [...out].map(k => k.split("/").map(Number));
+}
+
+async function saveOffline() {
+  if (!("caches" in window) || !route.targets.length) return;
+  const el = $("offline");
+  try {
+    const libs = await caches.open("kompas-libs");
+    for (const u of LIBS) if (!(await libs.match(u))) { const r = await fetch(u, { mode: "cors" }); if (r.ok) await libs.put(u, r); }
+    const cache = await caches.open("kompas-tiles"), tiles = corridorTiles();
+    let done = 0, failed = 0, bytes = 0, i = 0;
+    const show = () => { el.textContent = `Offline kaart: ${done} van ${tiles.length} tegels opgeslagen${failed ? `, ${failed} mislukt` : ""}…`; };
+    const worker = async () => {
+      while (i < tiles.length) {
+        const [z, x, y] = tiles[i++], u = tileUrl(z, x, y);
+        try {
+          if (!(await cache.match(u))) {
+            const r = await fetch(u, { mode: "cors" });
+            if (!r.ok) throw new Error(r.status);
+            const blob = await r.clone().blob(); bytes += blob.size;
+            await cache.put(u, r);
+          }
+          done++;
+        } catch (e) { failed++; }
+        if ((done + failed) % 20 === 0) show();
+      }
+    };
+    show();
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    el.textContent = failed
+      ? `Offline kaart: ${done} van ${tiles.length} tegels opgeslagen, ${failed} mislukt. Open de pagina nog eens met internet.`
+      : `Offline kaart opgeslagen: ${tiles.length} tegels langs je route${bytes ? ` (${(bytes / 1048576).toFixed(1).replace(".", ",")} MB nieuw)` : ""}. Hint 3 werkt nu ook zonder bereik.`;
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  } catch (e) {
+    el.textContent = "Offline kaart opslaan lukte niet: " + e.message;
+  }
+}
+if (navigator.onLine) saveOffline();
+else $("offline").textContent = "Geen internet: offline kaart kan nu niet worden opgeslagen.";
 
 // offline beschikbaar maken (alleen via https, zoals op GitHub Pages)
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
